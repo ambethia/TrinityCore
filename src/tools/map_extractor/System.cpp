@@ -17,6 +17,7 @@
 
 #include "Banner.h"
 #include "CascHandles.h"
+#include "CascSourceManifest.h"
 #include "Common.h"
 #include "DB2CascFileSource.h"
 #include "DB2Meta.h"
@@ -83,6 +84,8 @@ std::set<uint32> CameraFileDataIds;
 bool PrintProgress = true;
 boost::filesystem::path input_path;
 boost::filesystem::path output_path;
+boost::filesystem::path source_manifest_path;
+CASC::SourceManifest source_manifest;
 
 // **************************************************
 // Extractor options
@@ -172,6 +175,7 @@ void Usage(char const* prg)
         "-p which installed product to open (wow/wowt/wow_beta)\n"\
         "-c use remote casc\n"\
         "-r set remote casc region - standard: eu\n"\
+        "--source-manifest write the deterministic CASC source inventory to this path\n"\
         "Example: %s -f 0 -i \"c:\\games\\game\"\n", prg, prg);
     exit(1);
 }
@@ -180,6 +184,15 @@ void HandleArgs(int argc, char* arg[])
 {
     for (int c = 1; c < argc; ++c)
     {
+        if (!strcmp(arg[c], "--source-manifest"))
+        {
+            if (c + 1 < argc && strlen(arg[c + 1]))
+                source_manifest_path = boost::filesystem::path(arg[++c]);
+            else
+                Usage(arg[0]);
+            continue;
+        }
+
         // i - input path
         // o - output path
         // e - extract only MAP(1)/DBC(2)/Camera(4)/gt(8) - standard: all(11)
@@ -1395,7 +1408,11 @@ bool OpenCascStorage(int locale)
             boost::filesystem::path const cache_dir(boost::filesystem::canonical(input_path) / "CascCache");
             CascStorage.reset(CASC::Storage::OpenRemote(cache_dir, WowLocaleToCascLocaleFlags[locale], CONF_Product, CONF_Region));
             if (CascStorage)
+            {
+                if (!source_manifest_path.empty())
+                    CascStorage->SetFileOpenObserver([](CASC::FileIdentity const& identity) { source_manifest.Record(identity); });
                 return true;
+            }
 
             printf("Unable to open remote casc fallback to local casc\n");
         }
@@ -1407,6 +1424,9 @@ bool OpenCascStorage(int locale)
             printf("error opening casc storage '%s' locale %s\n", storage_dir.string().c_str(), localeNames[locale]);
             return false;
         }
+
+        if (!source_manifest_path.empty())
+            CascStorage->SetFileOpenObserver([](CASC::FileIdentity const& identity) { source_manifest.Record(identity); });
 
         return true;
     }
@@ -1571,6 +1591,19 @@ int main(int argc, char * arg[])
         OpenCascStorage(firstInstalledLocale);
         ExtractMaps(build);
         CascStorage.reset();
+    }
+
+    if (!source_manifest_path.empty())
+    {
+        try
+        {
+            source_manifest.Write(source_manifest_path, "maps", CONF_Product, build);
+        }
+        catch (std::exception const& error)
+        {
+            fprintf(stderr, "Failed to write CASC source manifest: %s\n", error.what());
+            return 1;
+        }
     }
 
     return 0;

@@ -19,6 +19,7 @@
 #include "adtfile.h"
 #include "Banner.h"
 #include "Common.h"
+#include "CascSourceManifest.h"
 #include "DB2CascFileSource.h"
 #include "ExtractorDB2LoadInfo.h"
 #include "Locales.h"
@@ -72,6 +73,8 @@ std::unordered_map<uint32, LiquidMaterialEntry> LiquidMaterials;
 std::unordered_map<uint32, LiquidTypeEntry> LiquidTypes;
 std::vector<MapEntry> map_ids;
 boost::filesystem::path input_path;
+boost::filesystem::path source_manifest_path;
+CASC::SourceManifest source_manifest;
 bool preciseVectorData = false;
 char const* CascProduct = "wow";
 char const* CascRegion = "eu";
@@ -122,7 +125,11 @@ bool OpenCascStorage(int locale)
             boost::filesystem::path const casc_cache_dir(boost::filesystem::canonical(input_path) / "CascCache");
             CascStorage.reset(CASC::Storage::OpenRemote(casc_cache_dir, WowLocaleToCascLocaleFlags[locale], CascProduct, CascRegion));
             if (CascStorage)
+            {
+                if (!source_manifest_path.empty())
+                    CascStorage->SetFileOpenObserver([](CASC::FileIdentity const& identity) { source_manifest.Record(identity); });
                 return true;
+            }
 
             printf("Unable to open remote casc fallback to local casc\n");
         }
@@ -134,6 +141,9 @@ bool OpenCascStorage(int locale)
             printf("error opening casc storage '%s' locale %s\n", storage_dir.string().c_str(), localeNames[locale]);
             return false;
         }
+
+        if (!source_manifest_path.empty())
+            CascStorage->SetFileOpenObserver([](CASC::FileIdentity const& identity) { source_manifest.Record(identity); });
 
         return true;
     }
@@ -584,6 +594,13 @@ bool processArgv(int argc, char ** argv, const char *versionString)
             else
                 result = false;
         }
+        else if (strcmp("--source-manifest", argv[i]) == 0)
+        {
+            if (i + 1 < argc && strlen(argv[i + 1]))
+                source_manifest_path = boost::filesystem::path(argv[++i]);
+            else
+                result = false;
+        }
         else
         {
             result = false;
@@ -603,6 +620,7 @@ bool processArgv(int argc, char ** argv, const char *versionString)
         printf("   -r  set remote casc region - standard: eu\n");
         printf("   -dl dbc locale\n");
         printf("   --threads <N> number of threads to use, default: all cpu cores\n");
+        printf("   --source-manifest <path> write the deterministic CASC source inventory\n");
         printf("   -? : This message.\n");
     }
 
@@ -678,6 +696,7 @@ int main(int argc, char ** argv)
 
     uint32 installedLocalesMask = GetInstalledLocalesMask();
     int32 FirstLocale = -1;
+    uint32 build = 0;
     for (int i = 0; i < TOTAL_LOCALES; ++i)
     {
         if (DbcLocale && !(DbcLocale & (1 << i)))
@@ -693,7 +712,7 @@ int main(int argc, char ** argv)
             continue;
 
         FirstLocale = i;
-        uint32 build = CascStorage->GetBuildNumber();
+        build = CascStorage->GetBuildNumber();
         if (!build)
         {
             CascStorage.reset();
@@ -724,6 +743,19 @@ int main(int argc, char ** argv)
     }
 
     CascStorage.reset();
+
+    if (!source_manifest_path.empty())
+    {
+        try
+        {
+            source_manifest.Write(source_manifest_path, "vmaps", CascProduct, build);
+        }
+        catch (std::exception const& error)
+        {
+            fprintf(stderr, "Failed to write CASC source manifest: %s\n", error.what());
+            return 1;
+        }
+    }
 
     printf("\n");
     if (!success)

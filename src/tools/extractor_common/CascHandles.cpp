@@ -25,7 +25,10 @@
 #include <boost/asio/write.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <algorithm>
+#include <memory>
 #include <string>
+#include <utility>
 
 char const* CASC::HumanReadableCASCError(uint32 error)
 {
@@ -270,6 +273,34 @@ bool Storage::HasTactKey(uint64 keyLookup) const
     return CascFindEncryptionKey(_handle, keyLookup) != nullptr;
 }
 
+void Storage::SetFileOpenObserver(FileOpenObserver observer)
+{
+    _fileOpenObserver = std::move(observer);
+}
+
+File* Storage::OpenedFile(HANDLE handle) const
+{
+    std::unique_ptr<File> file(new File(handle));
+    if (_fileOpenObserver)
+    {
+        CASC_FILE_FULL_INFO info = { };
+        FileIdentity identity;
+        if (::CascGetFileInfo(handle, CascFileFullInfo, &info, sizeof(info), nullptr))
+        {
+            std::copy(std::begin(info.CKey), std::end(info.CKey), identity.ContentKey.begin());
+            std::copy(std::begin(info.EKey), std::end(info.EKey), identity.EncodedKey.begin());
+            identity.ContentSize = info.ContentSize;
+            identity.FileDataId = info.FileDataId;
+            identity.LocaleFlags = info.LocaleFlags;
+            identity.ContentFlags = info.ContentFlags;
+            identity.Complete = true;
+        }
+        _fileOpenObserver(identity);
+    }
+
+    return file.release();
+}
+
 File* Storage::OpenFile(char const* fileName, uint32 localeMask, bool printErrors /*= false*/, bool zerofillEncryptedParts /*= false*/) const
 {
     DWORD openFlags = CASC_OPEN_BY_NAME;
@@ -288,7 +319,7 @@ File* Storage::OpenFile(char const* fileName, uint32 localeMask, bool printError
         return nullptr;
     }
 
-    return new File(handle);
+    return OpenedFile(handle);
 }
 
 File* Storage::OpenFile(uint32 fileDataId, uint32 localeMask, bool printErrors /*= false*/, bool zerofillEncryptedParts /*= false*/) const
@@ -309,7 +340,7 @@ File* Storage::OpenFile(uint32 fileDataId, uint32 localeMask, bool printErrors /
         return nullptr;
     }
 
-    return new File(handle);
+    return OpenedFile(handle);
 }
 
 File::File(HANDLE handle) : _handle(handle)

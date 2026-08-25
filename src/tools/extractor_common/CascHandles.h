@@ -20,6 +20,8 @@
 
 #include "Define.h"
 #include <CascPort.h>
+#include <array>
+#include <functional>
 
 namespace boost
 {
@@ -33,11 +35,24 @@ namespace CASC
 {
     char const* HumanReadableCASCError(uint32 error);
 
+    struct FileIdentity
+    {
+        std::array<uint8, 16> ContentKey = { };
+        std::array<uint8, 16> EncodedKey = { };
+        uint64 ContentSize = 0;
+        uint32 FileDataId = 0;
+        uint32 LocaleFlags = 0;
+        uint32 ContentFlags = 0;
+        bool Complete = false;
+    };
+
     class File;
 
     class Storage
     {
     public:
+        using FileOpenObserver = std::function<void(FileIdentity const&)>;
+
         ~Storage();
 
         static Storage* Open(boost::filesystem::path const& path, uint32 localeMask, char const* product);
@@ -47,6 +62,8 @@ namespace CASC
         uint32 GetInstalledLocalesMask() const;
         bool HasTactKey(uint64 keyLookup) const;
 
+        void SetFileOpenObserver(FileOpenObserver observer);
+
         File* OpenFile(char const* fileName, uint32 localeMask, bool printErrors = false, bool zerofillEncryptedParts = false) const;
         File* OpenFile(uint32 fileDataId, uint32 localeMask, bool printErrors = false, bool zerofillEncryptedParts = false) const;
 
@@ -54,14 +71,15 @@ namespace CASC
         Storage(HANDLE handle);
 
         bool LoadOnlineTactKeys();
+        File* OpenedFile(HANDLE handle) const;
 
         HANDLE _handle;
+        FileOpenObserver _fileOpenObserver;
     };
 
     class File
     {
-        friend File* Storage::OpenFile(char const* fileName, uint32 localeMask, bool printErrors, bool zerofillEncryptedParts) const;
-        friend File* Storage::OpenFile(uint32 fileDataId, uint32 localeMask, bool printErrors, bool zerofillEncryptedParts) const;
+        friend class Storage;
 
     public:
         ~File();
